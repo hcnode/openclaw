@@ -89,6 +89,12 @@ export const FIELD_HELP: Record<string, string> = {
     "CIDR/IP allowlist of upstream proxies permitted to provide forwarded client identity headers. Keep this list narrow so untrusted hops cannot impersonate users.",
   "gateway.allowRealIpFallback":
     "Enables x-real-ip fallback when x-forwarded-for is missing in proxy scenarios. Keep disabled unless your ingress stack requires this compatibility behavior.",
+  "gateway.pairing":
+    "Device pairing limits. Controls how long pending pairing codes stay valid and how many unapproved requests are kept per channel.",
+  "gateway.pairing.pendingTtlMs":
+    "How long a pending pairing code stays valid before expiring, in milliseconds. Default: 3600000 (1 hour). Increase for deployments where operators may not approve quickly.",
+  "gateway.pairing.maxPending":
+    "Maximum number of pending (unapproved) pairing requests kept per channel. Oldest are pruned first. Default: 3. Increase for large multi-device deployments.",
   "gateway.tools":
     "Gateway-level tool exposure allow/deny policy that can restrict runtime tool availability independent of agent/tool profiles. Use this for coarse emergency controls and production hardening.",
   "gateway.tools.allow":
@@ -548,20 +554,6 @@ export const FIELD_HELP: Record<string, string> = {
     "Trace sampling rate (0-1) controlling how much trace traffic is exported to observability backends. Lower rates reduce overhead/cost, while higher rates improve debugging fidelity.",
   "diagnostics.otel.flushIntervalMs":
     "Interval in milliseconds for periodic telemetry flush from buffers to the collector. Increase to reduce export chatter, or lower for faster visibility during active incident response.",
-  "diagnostics.otel.captureContent":
-    "Opt-in OTEL span content capture. Defaults to off; boolean true captures non-system message/tool content, while the object form lets you enable specific content classes.",
-  "diagnostics.otel.captureContent.enabled":
-    "Master switch for granular OTEL content capture fields. Keep disabled unless your collector is approved for raw prompt, response, or tool content.",
-  "diagnostics.otel.captureContent.inputMessages":
-    "Capture model input message text on OTEL spans when content capture is enabled.",
-  "diagnostics.otel.captureContent.outputMessages":
-    "Capture model output message text on OTEL spans when content capture is enabled.",
-  "diagnostics.otel.captureContent.toolInputs":
-    "Capture tool input text on OTEL spans when content capture is enabled.",
-  "diagnostics.otel.captureContent.toolOutputs":
-    "Capture tool output text on OTEL spans when content capture is enabled.",
-  "diagnostics.otel.captureContent.systemPrompt":
-    "Capture system prompt text on OTEL spans when content capture is enabled. This remains off unless explicitly enabled.",
   "diagnostics.cacheTrace.enabled":
     "Log cache trace snapshots for embedded agent runs (default: false).",
   "diagnostics.cacheTrace.filePath":
@@ -1120,8 +1112,6 @@ export const FIELD_HELP: Record<string, string> = {
     "Per-plugin typed hook policy controls for core-enforced safety gates. Use this to constrain high-impact hook categories without disabling the entire plugin.",
   "plugins.entries.*.hooks.allowPromptInjection":
     "Controls whether this plugin may mutate prompts through typed hooks. Set false to block `before_prompt_build` and ignore prompt-mutating fields from legacy `before_agent_start`, while preserving legacy `modelOverride` and `providerOverride` behavior.",
-  "plugins.entries.*.hooks.allowConversationAccess":
-    "Controls whether this plugin may read raw conversation content from typed hooks such as `llm_input`, `llm_output`, and `agent_end`. Non-bundled plugins must opt in explicitly.",
   "plugins.entries.*.subagent":
     "Per-plugin subagent runtime controls for model override trust and allowlists. Keep this unset unless a plugin must explicitly steer subagent model selection.",
   "plugins.entries.*.subagent.allowModelOverride":
@@ -1165,17 +1155,17 @@ export const FIELD_HELP: Record<string, string> = {
   "agents.defaults.model.fallbacks":
     "Ordered fallback models (provider/model). Used when the primary model fails.",
   "agents.defaults.embeddedHarness":
-    "Default embedded agent harness policy. Omitted runtime uses built-in OpenClaw Pi. Use runtime=auto for plugin harness selection, or a registered harness id such as codex.",
+    "Default embedded agent harness policy. Use runtime=auto for plugin harness selection, runtime=pi for built-in PI, or a registered harness id such as codex.",
   "agents.defaults.embeddedHarness.runtime":
-    "Embedded harness runtime: pi, auto, or a registered plugin harness id such as codex. Omitted runtime uses built-in OpenClaw Pi.",
+    "Embedded harness runtime: auto, pi, or a registered plugin harness id such as codex.",
   "agents.defaults.embeddedHarness.fallback":
-    "Embedded harness fallback when no plugin harness matches. Auto mode defaults to pi; explicit plugin runtimes default to none and do not inherit broader fallback settings. Selected plugin harness failures surface directly.",
+    "Embedded harness fallback when no plugin harness matches. Selected plugin harness failures surface directly. Set none to disable automatic PI fallback.",
   "agents.list.*.embeddedHarness":
-    "Per-agent embedded harness policy override. Use runtime=codex to force Codex for one agent while defaults stay in auto mode.",
+    "Per-agent embedded harness policy override. Use fallback=none to make missing plugin harness selection fail instead of falling back to PI.",
   "agents.list.*.embeddedHarness.runtime":
-    "Per-agent embedded harness runtime: pi, auto, or a registered plugin harness id such as codex. Omitted runtime inherits the default OpenClaw Pi behavior.",
+    "Per-agent embedded harness runtime: auto, pi, or a registered plugin harness id such as codex.",
   "agents.list.*.embeddedHarness.fallback":
-    "Per-agent embedded harness fallback. Auto mode defaults to pi; explicit plugin runtimes default to none and do not inherit broader fallback settings.",
+    "Per-agent embedded harness fallback. Set none to disable automatic PI fallback for this agent.",
   "agents.defaults.imageModel.primary":
     "Optional image model (provider/model) used when the primary model lacks image input.",
   "agents.defaults.imageModel.fallbacks": "Ordered fallback image models (provider/model).",
@@ -1274,6 +1264,8 @@ export const FIELD_HELP: Record<string, string> = {
     "Registers native skill commands so users can invoke skills directly from provider command menus where supported. Keep aligned with your skill policy so exposed commands match what operators expect.",
   "commands.text":
     "Enables text-command parsing in chat input in addition to native command surfaces where available. Keep this enabled for compatibility across channels that do not support native command registration.",
+  "commands.modelsWrite":
+    "Allow model-management write commands such as `/models add` to register provider/model entries directly into config and make them available without restarting the gateway (default: true).",
   "commands.bash":
     "Allow bash chat command (`!`; `/bash` alias) to run host shell commands (default: false; requires tools.elevated).",
   "commands.bashForegroundMs":

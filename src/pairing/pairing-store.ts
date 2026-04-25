@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getPairingAdapter } from "../channels/plugins/pairing.js";
 import type { ChannelPairingAdapter } from "../channels/plugins/pairing.types.js";
+import type { GatewayPairingConfig } from "../config/types.gateway.js";
 import { withFileLock as withPathLock } from "../infra/file-lock.js";
 import { readJsonFileWithFallback, writeJsonFileAtomically } from "../plugin-sdk/json-store.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
@@ -30,8 +31,8 @@ export type { PairingChannel } from "./pairing-store.types.js";
 
 const PAIRING_CODE_LENGTH = 8;
 const PAIRING_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const PAIRING_PENDING_TTL_MS = 60 * 60 * 1000;
-const PAIRING_PENDING_MAX = 3;
+const DEFAULT_PAIRING_PENDING_TTL_MS = 60 * 60 * 1000;
+const DEFAULT_PAIRING_PENDING_MAX = 3;
 const PAIRING_STORE_LOCK_OPTIONS = {
   retries: {
     retries: 10,
@@ -88,11 +89,14 @@ async function readPairingRequests(filePath: string): Promise<PairingRequest[]> 
   return Array.isArray(value.requests) ? value.requests : [];
 }
 
-async function readPrunedPairingRequests(filePath: string): Promise<{
+async function readPrunedPairingRequests(
+  filePath: string,
+  pendingTtlMs: number,
+): Promise<{
   requests: PairingRequest[];
   removed: boolean;
 }> {
-  return pruneExpiredRequests(await readPairingRequests(filePath), Date.now());
+  return pruneExpiredRequests(await readPairingRequests(filePath), Date.now(), pendingTtlMs);
 }
 
 async function ensureJsonFile(filePath: string, fallback: unknown) {
@@ -125,19 +129,29 @@ function parseTimestamp(value: string | undefined): number | null {
   return parsed;
 }
 
-function isExpired(entry: PairingRequest, nowMs: number): boolean {
+function resolvePairingLimits(pairingConfig?: GatewayPairingConfig): {
+  pendingTtlMs: number;
+  maxPending: number;
+} {
+  return {
+    pendingTtlMs: pairingConfig?.pendingTtlMs ?? DEFAULT_PAIRING_PENDING_TTL_MS,
+    maxPending: pairingConfig?.maxPending ?? DEFAULT_PAIRING_PENDING_MAX,
+  };
+}
+
+function isExpired(entry: PairingRequest, nowMs: number, pendingTtlMs: number): boolean {
   const createdAt = parseTimestamp(entry.createdAt);
   if (!createdAt) {
     return true;
   }
-  return nowMs - createdAt > PAIRING_PENDING_TTL_MS;
+  return nowMs - createdAt > pendingTtlMs;
 }
 
-function pruneExpiredRequests(reqs: PairingRequest[], nowMs: number) {
+function pruneExpiredRequests(reqs: PairingRequest[], nowMs: number, pendingTtlMs: number) {
   const kept: PairingRequest[] = [];
   let removed = false;
   for (const req of reqs) {
-    if (isExpired(req, nowMs)) {
+    if (isExpired(req, nowMs, pendingTtlMs)) {
       removed = true;
       continue;
     }
@@ -491,17 +505,19 @@ export async function listChannelPairingRequests(
   channel: PairingChannel,
   env: NodeJS.ProcessEnv = process.env,
   accountId?: string,
+  pairingConfig?: GatewayPairingConfig,
 ): Promise<PairingRequest[]> {
+  const { pendingTtlMs, maxPending } = resolvePairingLimits(pairingConfig);
   const filePath = resolvePairingPath(channel, env);
   return await withFileLock(
     filePath,
     { version: 1, requests: [] } satisfies PairingStore,
     async () => {
       const { requests: prunedExpired, removed: expiredRemoved } =
-        await readPrunedPairingRequests(filePath);
+        await readPrunedPairingRequests(filePath, pendingTtlMs);
       const { requests: pruned, removed: cappedRemoved } = pruneExcessRequestsByAccount(
         prunedExpired,
-        PAIRING_PENDING_MAX,
+        maxPending,
       );
       if (expiredRemoved || cappedRemoved) {
         await writeJsonFile(filePath, {
@@ -535,7 +551,9 @@ export async function upsertChannelPairingRequest(params: {
   env?: NodeJS.ProcessEnv;
   /** Extension channels can pass their adapter directly to bypass registry lookup. */
   pairingAdapter?: ChannelPairingAdapter;
+  pairingConfig?: GatewayPairingConfig;
 }): Promise<{ code: string; created: boolean }> {
+  const { pendingTtlMs, maxPending } = resolvePairingLimits(params.pairingConfig);
   const env = params.env ?? process.env;
   const filePath = resolvePairingPath(params.channel, env);
   return await withFileLock(
@@ -560,6 +578,7 @@ export async function upsertChannelPairingRequest(params: {
       const { requests: prunedExpired, removed: expiredRemoved } = pruneExpiredRequests(
         reqs,
         nowMs,
+        pendingTtlMs,
       );
       reqs = prunedExpired;
       const normalizedMatchingAccountId = normalizedAccountId;
@@ -585,7 +604,7 @@ export async function upsertChannelPairingRequest(params: {
           meta: meta ?? existing?.meta,
         };
         reqs[existingIdx] = next;
-        const { requests: capped } = pruneExcessRequestsByAccount(reqs, PAIRING_PENDING_MAX);
+        const { requests: capped } = pruneExcessRequestsByAccount(reqs, maxPending);
         await writeJsonFile(filePath, {
           version: 1,
           requests: capped,
@@ -595,13 +614,13 @@ export async function upsertChannelPairingRequest(params: {
 
       const { requests: capped, removed: cappedRemoved } = pruneExcessRequestsByAccount(
         reqs,
-        PAIRING_PENDING_MAX,
+        maxPending,
       );
       reqs = capped;
       const accountRequestCount = reqs.filter((r) =>
         requestMatchesAccountId(r, normalizedMatchingAccountId),
       ).length;
-      if (PAIRING_PENDING_MAX > 0 && accountRequestCount >= PAIRING_PENDING_MAX) {
+      if (maxPending > 0 && accountRequestCount >= maxPending) {
         if (expiredRemoved || cappedRemoved) {
           await writeJsonFile(filePath, {
             version: 1,
@@ -632,7 +651,9 @@ export async function approveChannelPairingCode(params: {
   code: string;
   accountId?: string;
   env?: NodeJS.ProcessEnv;
+  pairingConfig?: GatewayPairingConfig;
 }): Promise<{ id: string; entry?: PairingRequest } | null> {
+  const { pendingTtlMs } = resolvePairingLimits(params.pairingConfig);
   const env = params.env ?? process.env;
   const code = (normalizeNullableString(params.code) ?? "").toUpperCase();
   if (!code) {
@@ -644,7 +665,7 @@ export async function approveChannelPairingCode(params: {
     filePath,
     { version: 1, requests: [] } satisfies PairingStore,
     async () => {
-      const { requests: pruned, removed } = await readPrunedPairingRequests(filePath);
+      const { requests: pruned, removed } = await readPrunedPairingRequests(filePath, pendingTtlMs);
       const normalizedAccountId = normalizePairingAccountId(params.accountId);
       const idx = pruned.findIndex((r) => {
         if (r.code.toUpperCase() !== code) {

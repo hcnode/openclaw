@@ -389,6 +389,20 @@ export type GatewayWebchatConfig = {
   chatHistoryMaxChars?: number;
 };
 
+export type GatewayPairingConfig = {
+  /**
+   * How long a pending pairing code stays valid before expiring (milliseconds).
+   * Default: 3600000 (1 hour).
+   */
+  pendingTtlMs?: number;
+  /**
+   * Maximum number of pending (unapproved) pairing requests kept per channel.
+   * Oldest requests are pruned when this limit is exceeded.
+   * Default: 3.
+   */
+  maxPending?: number;
+};
+
 export type GatewayConfig = {
   /** Single multiplexed port for Gateway WS + HTTP (default: 18789). */
   port?: number;
@@ -429,6 +443,8 @@ export type GatewayConfig = {
    * Default: false (safer fail-closed behavior).
    */
   allowRealIpFallback?: boolean;
+  /** Device pairing limits. */
+  pairing?: GatewayPairingConfig;
   /** Tool access restrictions for HTTP /tools/invoke endpoint. */
   tools?: GatewayToolsConfig;
   /** WebChat display/history settings. */
